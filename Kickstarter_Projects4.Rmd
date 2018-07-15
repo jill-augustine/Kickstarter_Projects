@@ -1,0 +1,811 @@
+
+---
+title: "What makes for a successful Kickstarter Project?"
+output: html_notebook
+---
+
+```{r}
+library(readr)
+library(tidyr)
+library(dplyr)
+library(stringr)
+library(tibble)
+library(lubridate)
+library(ggplot2)
+library(caret)
+library(doSNOW)
+library(broom)
+
+#ks2018 <- read_csv("ks-projects-201801.csv") %>% as.tibble()
+
+jtheme1 <- theme(plot.title = element_text(size = 14, face = "bold", hjust = 0.5), axis.title = element_text(face = "bold"), axis.text.x = element_text(angle = 90, vjust = 0.5))
+
+jtheme2 <- theme(plot.title = element_text(size = 14, face = "bold", hjust = 0.5), axis.title = element_text(face = "bold"))
+```
+
+#Data Manipulation
+The classes of some categories need to be changed. Columns that should be factors: category, main_category, currency, state, country. Columns that should be character vectors: ID
+
+```{r}
+glimpse(ks2018)
+summary(ks2018)
+```
+
+
+I copied the dataframe as to not edit the original import.
+```{r}
+ks18_1 <- ks2018
+```
+
+
+I change the required columns into factors and checked this has worked.
+```{r}
+factor_names <- c("category", "main_category", "currency", "state", "country")
+glimpse(ks18_1[factor_names])
+ks18_1[factor_names] <- lapply(ks18_1[factor_names], factor)
+glimpse(ks18_1[factor_names])
+
+```
+
+
+
+Then I changed the ID column from an integer vector to a character vector and checked this has worked.
+```{r}
+glimpse(ks18_1$ID)
+ks18_1$ID <- as.character(ks18_1$ID)
+glimpse(ks18_1$ID)
+```
+
+
+
+I checked for missing values. usd_pledged is the only category of interest with NAs (1%). I will ignore this because I have chosen to use the usd_pledged_real column for my analysis.
+```{r}
+summary(ks18_1)
+mean(is.na(ks18_1$`usd pledged`))
+sapply(ks18_1, function(x) {sum(is.na(x))})
+sapply(ks18_1, function(x) {mean(is.na(x))})
+```
+
+
+**Adding Features**
+
+I added extra columns which might be useful for later analysis. 
+
+To calculated the project duration, I rounded the launch date to the nearest day (it was previously in ymd-hms format). I then converted it from "POSIXct" "POSIXt" to 'date' formate and calculated the time difference between the launch and deadline dates.
+```{r}
+class(ks18_1$launched)
+ks18_1$launched <- ks18_1$launched %>% floor_date(unit = "day") %>% ymd()
+class(ks18_1$launched)
+
+ks18_1 <- ks18_1 %>% mutate(duration = deadline - launched)
+glimpse(ks18_1$duration)
+```
+
+I added an End Day and Start Day column with the week starting on Monday and ending on Sunday. I also added End Month and Start Month columns. 
+
+I calculated the "generosity" as the average amount pledged per backer (per project), and the percentage of goal pledged. 
+For the "generosity", calculations with pledged but no backers resulted in Inf. Those with no pledge and no backers resulted in NaN. Take this into consideration when performing analyses using the gen column.
+```{r}
+ks18_1 <- ks18_1 %>% 
+  mutate(endday = wday(deadline, label = TRUE, abbr = TRUE, week_start = getOption("lubridate.week.start", 1))) %>%
+  
+  mutate(startday = wday(launched, label = TRUE, abbr = TRUE, week_start = getOption("lubridate.week.start", 1))) %>%
+  
+  mutate(endmonth = month(deadline, label = TRUE, abbr = TRUE)) %>%
+  
+  mutate(startmonth = month(launched, label = TRUE, abbr = TRUE)) %>%
+
+#total amount pledged / total number of backers per project
+  mutate(gen = usd_pledged_real/backers) %>%
+  
+  mutate(pct_raised = (usd_pledged_real / usd_goal_real)*100)
+
+summary(ks18_1$gen)
+```
+
+
+#Filtering the data
+
+I decided only to consider projects that had run to completion (where the state was either successful or failed). This removed 46986 observations, 12% of the dataset.
+
+```{r}
+ks18_2 <- ks18_1 %>% filter(state %in% c("successful", "failed"))
+nrow(ks18_1) - nrow(ks18_2)
+(nrow(ks18_1) - nrow(ks18_2)) / nrow(ks18_1)
+```
+
+*What is the variation in the data? Which values should we keep and which should we filter out?*
+
+```{r}
+ks18_2 %>% ggplot(aes(usd_pledged_real/1000000)) + 
+  geom_histogram(bins = 100, center = 1) + 
+  xlab("Amount pledged (USD, Millions)")
+
+pledge_q95 <- ks18_2$usd_pledged_real %>% quantile(0.95)
+
+ks18_2 %>% filter(usd_pledged_real <= pledge_q95) %>%
+  ggplot(aes(usd_pledged_real)) + 
+  geom_histogram(bins = 100, center = 1) + 
+  xlab("Amount pledged (USD)")
+```
+Filtering out observations where the amount pledged is above the 95th percentile (30694 USD).
+
+```{r}
+ks18_2 %>% ggplot(aes(usd_goal_real/1000000)) + 
+  geom_histogram(bins = 100, center = 1) + 
+  xlab("Goal (USD, Millions)")
+
+goal_q95 <- ks18_2$usd_goal_real %>% quantile(0.95)
+
+ks18_2 %>% filter(usd_goal_real <= goal_q95) %>%
+  ggplot(aes(usd_goal_real)) + 
+  geom_histogram(bins = 100, center = 1) + 
+  xlab("Goal (USD)")
+```
+Filtering out observations where the goal is above the 95th percentile (75000 USD).
+
+
+```{r}
+ks18_2 %>% ggplot(aes(backers/1000)) + 
+  geom_histogram(bins = 100, center = 1) + 
+  xlab("Number of Backers (Thousands)")
+
+backers_q95 <- ks18_2$backers %>% quantile(0.95)
+
+ks18_2 %>% filter(backers <= backers_q95) %>%
+  ggplot(aes(backers)) + 
+  geom_histogram(bins = 100, center = 1) + 
+  xlab("Number of Backers")
+```
+Filtering out observations where the number of backers is above the 95th percentile (369 backers).
+
+
+```{r}
+ks18_2 %>% ggplot(aes(duration)) + 
+  geom_histogram(binwidth = 1, center = 1) + 
+  xlab("Duration (days)")
+
+duration_q95 <- ks18_2$duration %>% quantile(0.95)
+
+ks18_2 %>% filter(duration <= duration_q95) %>%
+  ggplot(aes(duration)) + 
+  geom_histogram(binwidth = 1, center = 1) + 
+  xlab("Duration (days)")
+```
+Filtering out observations where the duration is above the 95th percentile (60 days).
+
+
+```{r}
+ks18_2 %>% 
+  filter(gen != Inf & !is.nan(gen)) %>%
+  ggplot(aes(gen)) + 
+  geom_histogram(bins = 100)
+
+gen_q95 <- ks18_2 %>% 
+  filter(gen != Inf & !is.nan(gen)) %>%
+  pull(gen) %>% quantile(0.95)
+
+ks18_2 %>% 
+  filter(gen != Inf & !is.nan(gen)) %>%
+  filter(gen <= gen_q95) %>%
+  ggplot(aes(gen)) + 
+  geom_histogram(bins = 100)
+
+
+```
+I filtered out the values of generosity that were NaN or Inf, then I filtered out the values that were above the 95th percentile (211$/backer)
+
+```{r}
+ks18_2 %>% ggplot(aes(pct_raised)) + 
+  geom_histogram(bins = 100, center = 1) + 
+  xlab("Percentage of Goal Raised")
+
+pctr_q95 <- ks18_2$pct_raised %>% quantile(0.95)
+
+ks18_2 %>% filter(pct_raised <= pctr_q95) %>%
+  ggplot(aes(duration)) + 
+  geom_histogram(binwidth = 1, center = 1) + 
+  xlab("Percentage of Goal Raised")
+```
+
+
+```{r}
+ks18_3 <- ks18_2 %>%
+filter(usd_pledged_real <= pledge_q95) %>%
+  filter(usd_goal_real <= goal_q95) %>%
+  filter(backers <= backers_q95) %>%
+  #changed this is 62 to get nicer density plots 
+  filter(duration <= 62) %>%
+  filter(gen != Inf & !is.nan(gen) & gen <= gen_q95) %>%
+  filter(pct_raised <= pctr_q95)
+  
+(nrow(ks18_2) - nrow(ks18_3))/nrow(ks18_2)
+```
+Filtering to avoid the 95th percentiles for amount pledged, goal, number of backers, duration and generosity excludes 25% of the data.
+
+Now I will see how the spread of data looks in the filtered dataset, called ks18_3
+```{r}
+ks18_3 %>% ggplot(aes(usd_pledged_real)) + 
+  geom_histogram(bins = 100)
+
+ks18_3 %>% ggplot(aes(usd_goal_real)) + 
+  geom_histogram(bins = 100)
+
+ks18_3 %>% ggplot(aes(backers)) + 
+  geom_histogram(bins = 100)
+
+ks18_3 %>% ggplot(aes(duration)) + 
+  geom_histogram(bins = 100)
+
+ks18_3 %>% ggplot(aes(gen)) + 
+  geom_histogram(bins = 100)
+
+ks18_3 %>% ggplot(aes(pct_raised)) + 
+  geom_histogram(bins = 100)
+
+```
+
+#Visualising the Data
+
+```{r}
+ks18_3 %>% 
+  sample_n(1000) %>%
+  select(usd_pledged_real, usd_goal_real, backers, duration, gen, pct_raised) %>%
+  pairs()
+```
+There is some positive correlation between amount pledged and goal, amount pledged and number of backers.
+There is some negative correlation between the goal and the number of backers.
+There is some negative correlation between the number of backers and the generosity. (This is to be expected because generosity was calculated from the number of backers)
+
+Now I will see how the data split according to the percentage of the goal raised.
+
+```{r}
+ks18_3 %>% sample_n(5000) %>%
+  ggplot(aes(usd_pledged_real, pct_raised, col = state)) +
+  geom_point(size = 0.5, alpha = 0.4)
+
+ks18_3 %>% 
+  ggplot(aes(usd_pledged_real, col = state)) +
+  geom_density()
+```
+Most of the failed projects do not raise close to 100% of their goal.
+There are some lines of strong positive correlation. These are for example, goals set to 10,000. Receiving pledges of 15,000 means the pct_raised is 150%. I think we see these strong correlations because pcr_raised was calculated from the amount pledged and therefore x is always correlated to y.
+
+
+
+```{r}
+ks18_3 %>% sample_n(5000) %>%
+  ggplot(aes(usd_goal_real, pct_raised, col = state)) +
+  geom_point(size = 0.5, alpha = 0.2)
+
+ks18_3 %>% 
+  ggplot(aes(usd_goal_real, col = state)) +
+  geom_density()
+```
+Most of the failed projects do not raise close to 100% of their goal. 
+The strong lines indicate goal amounts. People tend to choose round numbers as goal amounts such as 10,000 or 20,000. There is some negative correlation between the goal and the percentage of goal raised for both failed and successful projects.
+
+
+```{r}
+ks18_3 %>% sample_n(5000) %>%
+  ggplot(aes(backers, pct_raised, col = state)) +
+  geom_point(size = 0.5, alpha = 0.4)
+
+ks18_3 %>% 
+  ggplot(aes(backers, col = state)) +
+  geom_density()
+```
+Most of the failed projects do not raise close to 100% of their goal. 
+There are no strong lines of correlation. Successful projects tend to have more backers than unsuccessful projects. Projects with more backers don't necessarily raise more than ones with fewer backers.
+
+SHOW THIS IN A BAR CHART OR PLOT WITH NUMBER OF BACKERS ON 1 AXIS AND SUCCESS STATE IN COLOUR
+
+```{r}
+ks18_3 %>% sample_n(5000) %>%
+  ggplot(aes(as.numeric(duration), pct_raised, col = state)) +
+  geom_point(size = 0.5, alpha = 0.4)
+
+ks18_3 %>% 
+  ggplot(aes(duration, col = state)) +
+  geom_density()
+```
+Both successful and unsuccessful projects have a similar spread of durations.
+
+```{r}
+ks18_3 %>% sample_n(5000) %>%
+  ggplot(aes(gen, pct_raised, col = state)) +
+  geom_point(size = 0.5, alpha = 0.4) + 
+  theme(legend.position = "none")
+
+ks18_3 %>% 
+  ggplot(aes(gen, col = state)) +
+  geom_density()
+```
+Successful projects tend to have slightly more generous backers than thpse for unsuccessful projects.
+
+**Binning the Explanatory Variables**
+
+**Title**
+
+```{r}
+ks18_3 %>%
+  ggplot(aes(duration, col = state)) + 
+  geom_density(size= 0.5, alpha = 1, bw = .5) + 
+  scale_color_brewer(palette = "Set2") +
+  scale_fill_brewer(palette = "Set2") +
+  geom_vline(xintercept = 30, col = "blue", size = 0.3, alpha = 1) +
+  ggtitle("Duration of Projects") +
+  xlab("Duration (days)") + 
+  theme_light() +
+  jtheme2
+```
+
+*Success Rate per Duration*
+
+```{r}
+ks18_3 %>% group_by(duration, state) %>%
+  summarise(count = n()) %>%
+  mutate(pct = count/sum(count)) %>%
+  ggplot(aes(duration, pct*100, fill = state)) + 
+  geom_col() +
+  geom_vline(xintercept = seq(0, 60, 5), size = 0.2) +
+  geom_hline(yintercept = 50, size = 0.2) +
+  
+  xlab("Duration (days)") + ylab("Success Rate") +
+  jtheme2
+  
+```
+Every fifth day has less success. Day 10, 15, 20, ... 60.
+
+*Success Rate per Goal*
+
+labels = c("0-10", "10-20", "20-30", "30-40", "40-50",
+                               "50-60", "60-70", "70-80", "80-90", "90-100")
+```{r}
+range(ks18_3$usd_goal_real)
+summary(ks18_3$usd_goal_real)
+
+ks18_3 %>% 
+mutate(goalrng = cut_interval(usd_goal_real, length = 2500,
+              labels = (seq(0,72500,2500) %>% 
+                          sapply(function(x) {paste0(x+1, "-", x+2500)})))) %>%
+group_by(goalrng, state) %>%
+summarise(count = n()) %>%
+  mutate(pct = count/sum(count)) %>%
+  ggplot(aes(goalrng, pct*100, fill = state)) + 
+  geom_col() +
+  geom_hline(yintercept = 50, size = 0.2) +
+  
+  xlab("Goal") + ylab("Success Rate") +
+  jtheme1
+```
+No projects with goals over 32,500USD succeeded (in this filtered dataset). Over 50% of projects with goals under 2501USD suceeded.
+
+*Success Rate per Amount Pledged*
+
+```{r}
+range(ks18_3$usd_pledged_real)
+summary(ks18_3$usd_pledged_real)
+
+ks18_3 %>% 
+mutate(pledgerng = cut_interval(usd_pledged_real, length = 1000,
+              labels = (seq(0,30000,1000) %>% 
+                          sapply(function(x) {paste0(x, "-", x+1000)})))) %>%
+group_by(pledgerng, state) %>%
+summarise(count = n()) %>%
+  mutate(pct = count/sum(count)) %>%
+  ggplot(aes(pledgerng, pct*100, fill = state)) + 
+  geom_col() +
+  geom_hline(yintercept = 50, size = 0.2) +
+  
+  xlab("Amount Pledged") + ylab("Success Rate") +
+  jtheme1
+```
+As the max pledged was 31000, this explains why projects with goals above this amount (30001-32500) did not succeed.
+
+*Success Rate per End Day*
+
+```{r}
+
+ks18_3 %>% 
+group_by(endday, state) %>%
+summarise(count = n()) %>%
+  mutate(pct = count/sum(count)) %>%
+  ggplot(aes(endday, pct*100, fill = state)) + 
+  geom_col() +
+  geom_hline(yintercept = 50, size = 0.2) +
+  
+  xlab("End Day") + ylab("Success Rate") +
+  jtheme1
+```
+
+
+*Success Rate per Month*
+
+```{r}
+ks18_3 %>% 
+group_by(endmonth, state) %>%
+summarise(count = n()) %>%
+  mutate(pct = count/sum(count)) %>%
+  ggplot(aes(endmonth, pct*100, fill = state)) + 
+  geom_col() +
+  geom_hline(yintercept = 50, size = 0.2) +
+  
+  xlab("End Month") + ylab("Success Rate") +
+  jtheme1
+```
+
+
+*Success Rate per Number of Backers*
+
+```{r}
+range(ks18_3$backers)
+summary(ks18_3$backers)
+
+ks18_3 %>% 
+mutate(backersrng = cut_interval(backers, length = 25,
+              labels = (seq(0,350,25) %>% 
+                          sapply(function(x) {paste0(x+1, "-", x+25)})))) %>%
+group_by(backersrng, state) %>%
+summarise(count = n()) %>%
+  mutate(pct = count/sum(count)) %>%
+  ggplot(aes(backersrng, pct*100, fill = state)) + 
+  geom_col() +
+  geom_hline(yintercept = 50, size = 0.2) +
+  
+  xlab("Number of Backers") + ylab("Success Rate") +
+  jtheme1
+```
+More than 50% of projects with more than 25 backers succeeded.
+
+*Success Rate per Main Catergory*
+
+```{r}
+sxsrt_main <- ks18_3 %>% 
+group_by(main_category, state) %>%
+summarise(count = n()) %>%
+  mutate(pct = count/sum(count)) %>%
+  arrange(desc(state), desc(pct))
+
+sxsrt_main$main_category <- factor(sxsrt_main$main_category, 
+       levels = sxsrt_main$main_category[1:(length(sxsrt_main$main_category)/2)])
+
+sxsrt_main %>%  
+ggplot(aes(main_category, pct*100, fill = state)) + 
+  geom_col() +
+  geom_hline(yintercept = 50, size = 0.2) +
+  
+  xlab("Main Category") + ylab("Success Rate") +
+  jtheme1
+```
+
+
+*Success Rate per Sub-Catergory*
+
+```{r}
+sxsrt_sub <- ks18_3 %>% 
+group_by(category, main_category, state) %>%
+summarise(count = n()) %>%
+  mutate(pct = count/sum(count)) %>%
+  arrange(desc(state), desc(pct))
+  
+sxsrt_sub %>% filter(category %in% sxsrt_sub$category[1:20])
+
+sxsrt_main$main_category <- factor(sxsrt_main$main_category, 
+       levels = sxsrt_main$main_category[1:(length(sxsrt_main$main_category)/2)])
+
+sxsrt_main %>%  
+ggplot(aes(main_category, pct*100, fill = state)) + 
+  geom_col() +
+  geom_hline(yintercept = 50, size = 0.2) +
+  
+  xlab("Main Category") + ylab("Success Rate") +
+  jtheme1
+```
+
+#Predicting Success State using Caret
+Afterwards I might try to predict pct_goal_raised.
+
+ks18_2 has been mutated to add columns but has only been filtered to select "successful" and "failed" projects. Rather than using the trimmed dataset for the prediction, I will use the full dataset but preprocess the data by 1) creating dummy variables for the categories, 2) normalising to account for the  right-tailed skew and 3) scaling the data because some columns have large values (such as goal) and others have small values (such as duration). The only further filtering I will do before pre-processing is the remove generosities with either NaN of Inf. 
+
+Yeo-Johnson is chosen as the normalisation method because it can tolerate zeros and negative values, but Box-Cox cannot. Other preprocessing could be nearZeoVar, findCorrelation, findLinearCombos. For these three I will first check to see which values would be excluded before deciding whether to include them in the actual preprocessing step.
+
+**Selecting Features**
+
+```{r}
+ks18_4 <- ks18_2 %>% filter(gen != Inf & !is.nan(gen)) %>%
+  select(state, backers, usd_goal_real, duration)
+
+ks18_4$state <- factor(ks18_4$state)
+```
+I removed the generosities with either NaN of Inf and only selected the features of interest (category, main_category, goal, state, backers, usd_pledged_real, usd_goal_real, duration, endday, startday, endmonth, startmonth, gen). I moved "state" to the first row for ease.
+
+Features of interest are those that are not unique or proxies for the varible I want to predict e.g. pct_raised is a proxy for success state.
+
+**Creating the Dummy Variables**
+
+```{r}
+dummyObj <- dummyVars(~ ., data = ks18_4, contrasts = FALSE)
+k4_1 <- predict(dummyObj, newdata = ks18_4) %>% as.tibble()
+
+glimpse(k4_1)
+```
+Now that I got rid of all categorical variables, dummyVars doens't do much. It split state into 2 (which I will soon kind of merge anyway) and it turned duration into a double.
+
+(I created dummy variables for the categorical variables. The unordered categorical values are now 1 and 0 e.g. Category.)
+
+
+**Selecting Features Part II**
+
+```{r}
+k4_2 <- cbind(ks18_4$state, k4_1[ , -c(1,2)])
+
+head(k4_2)
+
+names(k4_2)[1] <- "state"
+
+```
+(Now I will remove the column "state.failed" so that success is only indicated by the "state.successful" column. Also, because "state.failed" is would be a proxy for "state.successful" which we are trying to predict.) 
+
+I bound the dummy variables to the first column of the original dataframe because caret gave an error than if my predicted variable has only 2 values then I should use a 2 level factor instead.
+
+Note: I think the order of the columns is in the order of the original factor levels (alphabetical in most cases unless otherwise specified by ordering or manual assignment).
+
+
+**Checking how data would be affected by different pre-processing steps**
+```{r}
+# nzv <- nearZeroVar(k4_2)
+# names(k4_2)[nzv]
+```
+Now I will check for near Zero variance. All the non-ordered categories have near zero variance because they only one category has a 1 per observation. Not sure how to deal with this.
+
+
+```{r}
+# correl4_2 <- cor(k4_2[ , 2:ncol(k4_2)])
+# high_correl4_2 <- findCorrelation(correl4_2, cutoff = 0.9)
+# names(k4_2)[high_correl4_2]
+```
+Now I will check for correlated columns, then create a vector of features. 
+Then I identified highly correlated columns with a correlation cutoff of 0.9. 
+
+From the documentation "The absolute values of pair-wise correlations are considered. If two variables have a high correlation, the function looks at the mean absolute correlation of each variable and removes the variable with the largest mean absolute correlation." So col 175 (main_category.Theater) had the most correlation with other variables. 
+
+I will not filter the table but just note this information. If needed, I can add it back as a preprocessing step.
+
+**Pre-Processing**
+
+```{r}
+preProcObj <- preProcess(k4_2[, -1], method = c("scale", "YeoJohnson"))
+
+k4_3 <- predict(preProcObj, k4_2)
+
+```
+
+Now I will preprocess the data (which was already preprocessed to create dummy vars for the catgories).
+First I create the preprocessing object. I will use the "YeoJohnson" and "scale" methods. When looking at the object, in the method list I saw that "scale" was performed on all columns but "YeoJohnson" was only performed on the numerical ones (including the ordered day and month columns).
+
+Note: In the tibble resulting from applying the preprocessing object to k4_2, some of the 0 and 1 of the category columns have been covnverted to floaters but this is ok. Also, for the category columns, there are still only 2 values but rather that 0 and 1, the values are 0 and somthing other than 0, due to scaling.
+
+**Comparing Unprocessed and Pre-Processed Data**
+
+```{r}
+k4_2 %>% ggplot(aes(backers)) +
+  geom_histogram(bins = 100)
+
+k4_3 %>% ggplot(aes(backers)) +
+  geom_histogram(bins = 100)
+```
+Notice how both the spread of the data and the values on the x axis are different for the processed data.
+
+```{r}
+k4_2 %>% ggplot(aes(usd_goal_real)) +
+  geom_histogram(bins = 100)
+
+k4_3 %>% ggplot(aes(usd_goal_real)) +
+  geom_histogram(bins = 100)
+```
+
+```{r}
+k4_2 %>% ggplot(aes(duration)) +
+  geom_histogram(bins = 100)
+
+k4_3 %>% ggplot(aes(duration)) +
+  geom_histogram(bins = 100)
+```
+
+
+**Splitting the Data**
+
+```{r}
+set.seed(54321)
+k4_3foldsindex <- createFolds(k4_3$state, k=2, list = FALSE)
+k4_3fold1 <- k4_3[k4_3foldsindex == 1, ]
+
+k4_3fold1trainindex <- createDataPartition(k4_3fold1$state, time = 1, p = 0.7, list = FALSE)
+k4_3fold1train <- k4_3fold1[k4_3fold1trainindex, ]
+k4_3fold1test <- k4_3fold1[-k4_3fold1trainindex, ]
+
+prop.table(table(k4_3fold1$state))
+prop.table(table(k4_3fold1train$state))
+prop.table(table(k4_3fold1test$state))
+
+```
+There were too many observations to work with so I created random folds first (so the computational time is short enough for me to get a model out of it).
+
+I split did a 70:30 stratified split of the data. The data were stratified to keep the original proportions of state from the full dataset.
+
+**Defining the Train Control Object**
+
+```{r}
+trainControlObj <- trainControl(method = "cv", number = 10)
+```
+For this logistic regression I will use the "glm" method which does not have additional tuning parameters.
+
+**Training the Model**
+
+
+```{r}
+cl <- makeCluster(2, type = "SOCK")
+registerDoSNOW(cl)
+k4_3fold1mod <- train(state ~ ., data = k4_3fold1train, method = "glm", trControl = trainControlObj )
+stopCluster(cl)
+
+k4_3fold1mod
+
+k4_3fold1mod %>% summary()
+
+```
+I prepared the computational space onto 2 clusters, ran the algorithm and then put the computational space back together.
+
+**Checking the Quality of the Model**
+
+```{r}
+k4_3fold1preds <- predict(k4_3fold1mod, k4_3fold1test)
+
+confusionMatrix(k4_3fold1preds, k4_3fold1test$state)
+
+```
+The confusion matrix shows that sensitivity was 90.9% and specificity was 92.8%. Kappa was 0.83 is a comparison of how well the model performed compared a null, i.e. random predictions.
+
+**Comparing prior pre-processing to processing in the training step**
+
+I have no catgorical variables so I will work directly with ks18_4.
+
+*Splitting the Data*
+
+```{r}
+set.seed(54321)
+ks18_4foldsindex <- createFolds(ks18_4$state, k=2, list = FALSE)
+ks18_4fold1 <- ks18_4[ks18_4foldsindex == 1, ]
+
+ks18_4fold1trainindex <- createDataPartition(ks18_4fold1$state, times = 1, p = 0.7, list = FALSE)
+ks18_4fold1train <- ks18_4fold1[ks18_4fold1trainindex, ]
+ks18_4fold1test <- ks18_4fold1[-ks18_4fold1trainindex, ]
+
+prop.table(table(ks18_4$state))
+prop.table(table(ks18_4fold1$state))
+prop.table(table(ks18_4fold1train$state))
+prop.table(table(ks18_4fold1test$state))
+
+```
+
+*Defining the Train Control Object*
+
+```{r}
+trainControlObj <- trainControl(method = "cv", number = 10)
+```
+
+*Training The Model*
+
+```{r}
+cl <- makeCluster(2, type = "SOCK")
+registerDoSNOW(cl)
+ks18_4fold1mod <- train(state ~ ., data = ks18_4fold1train, 
+                        method = "glm", 
+                        preProcess = c("scale", "YeoJohnson"),
+                        trControl = trainControlObj )
+stopCluster(cl)
+
+ks18_4fold1mod
+
+ks18_4fold1mod %>% summary()
+```
+
+*Checking the Quality of the Model*
+
+```{r}
+ks18_4fold1preds <- predict(ks18_4fold1mod, ks18_4fold1test)
+
+confusionMatrix(ks18_4fold1preds, ks18_4fold1test$state)
+```
+
+*Comparing Models: Dummy Preprocessed vs non-dummy inline processed*
+
+```{r}
+k4_3fold1mod
+ks18_4fold1mod
+```
+THe preproccessed model has slightly lower accuracy on the training set.
+
+```{r}
+k4_3fold1mod %>% summary()
+ks18_4fold1mod %>% summary()
+```
+The numbers are different.
+
+```{r}
+confusionMatrix(k4_3fold1preds, k4_3fold1test$state)
+confusionMatrix(ks18_4fold1preds, ks18_4fold1test$state)
+```
+
+In the second model, overall accuracy was lower (the proportion of true positives and true negatives). The sensitivity (proportion of true positives detected) of the second model was higher (but it also incorrectly predicted more false values as positives). As a result, its specificity (true negatives) was lower.
+
+I expected these to be the same. The only difference was that the first most was created from data that had already been processed for dummy variables. Now I will create a model where the data comes from the dummy varible (k4_2).
+
+```{r}
+set.seed(54321)
+k4_2foldsindex <- createFolds(k4_2$state, k=2, list = FALSE)
+k4_2fold1 <- k4_2[k4_2foldsindex == 1, ]
+k4_2fold1trainindex <- createDataPartition(k4_2fold1$state, time = 1, p = 0.7, list = FALSE)
+k4_2fold1train <- k4_2fold1[k4_2fold1trainindex, ]
+k4_2fold1test <- k4_2fold1[-k4_2fold1trainindex, ]
+
+prop.table(table(k4_2fold1$state))
+prop.table(table(k4_2fold1train$state))
+prop.table(table(k4_2fold1test$state))
+
+trainControlObj <- trainControl(method = "cv", number = 10)
+
+cl <- makeCluster(2, type = "SOCK")
+registerDoSNOW(cl)
+k4_2fold1mod <- train(state ~ ., 
+                      data = k4_2fold1train, 
+                      method = "glm", 
+                      preProcess = c("scale", "YeoJohnson"),
+                      trControl = trainControlObj )
+stopCluster(cl)
+
+k4_2fold1mod
+k4_2fold1mod %>% summary()
+
+k4_2fold1preds <- predict(k4_2fold1mod, k4_2fold1test)
+confusionMatrix(k4_2fold1preds, k4_2fold1test$state)
+
+```
+
+*Comparing Models: Dummy Pre-Processed, to non-dummy Inline Processed to Dummy Inline Processed*
+
+```{r}
+k4_3fold1mod
+ks18_4fold1mod
+k4_2fold1mod
+```
+1) Dummy Pre-Processed, to 2) non-dummy Inline Processed to 3) Dummy Inline Processed
+Model 1 is most accurate. Models 2 and 3 have almost identical accuracy and kappa. It seems like performing dummyVars when there are no categorical variables has no effect. 
+
+```{r}
+k4_3fold1mod %>% summary()
+ks18_4fold1mod %>% summary()
+k4_2fold1mod %>% summary()
+```
+1) Dummy Pre-Processed, to 2) non-dummy Inline Processed to 3) Dummy Inline Processed
+Again model 1 is different but models 2 and 3 are the same.
+
+
+```{r}
+confusionMatrix(k4_3fold1preds, k4_3fold1test$state)
+confusionMatrix(ks18_4fold1preds, ks18_4fold1test$state)
+confusionMatrix(k4_2fold1preds, k4_2fold1test$state)
+```
+1) Dummy Pre-Processed, to 2) non-dummy Inline Processed to 3) Dummy Inline Processed
+Again, model 1 is different. Model 2 and 3 are the same.
+I read that this is because for model 1, the preprocessing was done on the whole dataset (train and test). This means the training data were processed whilst considering the test values. E.g. for example, the scaling would have considered an extreme values that ended up in the test but not the train set. This is a bit like cheating because it prepares the model for what the test data will look like. 
+This is why preprocessing (steps which rely on the other values in the column such as normalisation, scaling and centering) shoudl only be performed on the training set. Key point: Preprocess AFTER the data split not before.
+
+Note: scaling speedy up gradient descent by reducing the number of iterations needed.
+
+#Predicting Percent of Goal Raised Using Caret
+
+
+
+

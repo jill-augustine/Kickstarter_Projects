@@ -1,0 +1,725 @@
+---
+title: "What makes for a successful Kickstarter Project?"
+output: html_notebook
+---
+
+```{r}
+library(readr)
+library(tidyr)
+library(dplyr)
+library(stringr)
+library(tibble)
+library(lubridate)
+library(ggplot2)
+
+ks2018 <- read_csv("ks-projects-201801.csv") %>% as.tibble()
+
+jtheme1 <- theme(plot.title = element_text(size = 14, face = "bold", hjust = 0.5), axis.title = element_text(face = "bold"), axis.text.x = element_text(angle = 90, vjust = 0.5))
+
+jtheme2 <- theme(plot.title = element_text(size = 14, face = "bold", hjust = 0.5), axis.title = element_text(face = "bold"))
+```
+
+#Data Manipulation
+The classes of some categories need to be changed. Columns that should be factors: category, main_category, currency, state, country. Columns that should be character vectors: ID
+
+```{r}
+glimpse(ks2018)
+summary(ks2018)
+```
+
+
+I copied the dataframe as to not edit the original import.
+```{r}
+ks18_1 <- ks2018
+```
+
+
+I change the required columns into factors and checked this has worked.
+```{r}
+factor_names <- c("category", "main_category", "currency", "state", "country")
+glimpse(ks18_1[factor_names])
+ks18_1[factor_names] <- lapply(ks18_1[factor_names], factor)
+glimpse(ks18_1[factor_names])
+
+```
+
+
+
+Then I changed the ID column from an integer vector to a character vector and checked this has worked.
+```{r}
+glimpse(ks18_1$ID)
+ks18_1$ID <- as.character(ks18_1$ID)
+glimpse(ks18_1$ID)
+```
+
+
+
+I checked for missing values. usd_pledged is the only category of interest with NAs (1%). I will ignore this because I have chosen to use the usd_pledged_real column for my analysis.
+```{r}
+summary(ks18_1)
+mean(is.na(ks18_1$`usd pledged`))
+sapply(ks18_1, function(x) {sum(is.na(x))})
+sapply(ks18_1, function(x) {mean(is.na(x))})
+```
+
+
+**Adding Features**
+
+I added extra columns which might be useful for later analysis. 
+
+To calculated the project duration, I rounded the launch date to the nearest day (it was previously in ymd-hms format). I then converted it from "POSIXct" "POSIXt" to 'date' formate and calculated the time difference between the launch and deadline dates.
+```{r}
+class(ks18_1$launched)
+ks18_1$launched <- ks18_1$launched %>% floor_date(unit = "day") %>% ymd()
+class(ks18_1$launched)
+
+ks18_1 <- ks18_1 %>% mutate(duration = deadline - launched)
+glimpse(ks18_1$duration)
+```
+
+I added an End Day and Start Day column with the week starting on Monday and ending on Sunday. I also added End Month and Start Month columns. 
+
+I calculated the "generosity" as the average amount pledged per backer (per project), and the percentage of goal pledged. 
+For the "generosity", calculations with pledged but no backers resulted in Inf. Those with no pledge and no backers resulted in NaN. Take this into consideration when performing analyses using the gen column.
+```{r}
+ks18_1 <- ks18_1 %>% 
+  mutate(endday = wday(deadline, label = TRUE, abbr = TRUE, week_start = getOption("lubridate.week.start", 1))) %>%
+  
+  mutate(startday = wday(launched, label = TRUE, abbr = TRUE, week_start = getOption("lubridate.week.start", 1))) %>%
+  
+  mutate(endmonth = month(deadline, label = TRUE, abbr = TRUE)) %>%
+  
+  mutate(startmonth = month(launched, label = TRUE, abbr = TRUE)) %>%
+
+#total amount pledged / total number of backers per project
+  mutate(gen = usd_pledged_real/backers) %>%
+  
+  mutate(pct_raised = (usd_pledged_real / usd_goal_real)*100)
+
+summary(ks18_1$gen)
+```
+
+
+#Filtering the data
+
+I decided only to consider projects that had run to completion (where the state was either successful or failed). This removed 46986 observations, 12% of the dataset.
+
+```{r}
+ks18_2 <- ks18_1 %>% filter(state %in% c("successful", "failed"))
+nrow(ks18_1) - nrow(ks18_2)
+(nrow(ks18_1) - nrow(ks18_2)) / nrow(ks18_1)
+```
+
+
+**What is the variation in the numerical data**
+
+Histograms show that almost all the data lies within the first 5% of values. 
+```{r}
+ks18_2 %>% ggplot(aes(usd_pledged_real/1000000)) + 
+  geom_histogram(bins = 50, center = 1) + 
+  xlab("Amount pledged (USD, Millions)") + 
+  jtheme1 
+
+ks18_2 %>% ggplot(aes(usd_goal_real/1000000)) + 
+  geom_histogram(bins = 50, center = 1) + 
+  xlab("Goal (USD, Millions)") + 
+  jtheme1 
+```
+
+
+Visualising this will be difficult. I decided to excuse outliers by excluding the top 5% of pledged and goal values. This consists of 16584 rows for pledge and 15541 rows for goal. If these observations did not overlap this would result in exclusion of 32125 observations (roughly 10% of all observations). The filter actually excludes 29721 observations meaning that 2404 observations had both pledges in the top 5% and goals in the top 5% (after filtering for completed campaigns).
+
+
+
+```{r}
+pledged_q95 <- ks18_2$usd_pledged_real %>% quantile(.95)
+goal_q95 <- ks18_2$usd_goal_real %>% quantile(.95)
+
+ks18_2 %>% filter(usd_pledged_real > pledged_q95) %>% nrow()
+ks18_2 %>% filter(usd_goal_real > goal_q95) %>% nrow()
+
+ks18_2 %>% filter(usd_pledged_real > pledged_q95 | usd_goal_real > goal_q95) %>% nrow()
+
+ks18_3 <- ks18_2 %>% filter(usd_pledged_real <= pledged_q95 & usd_goal_real <= goal_q95)
+
+```
+
+Then I remade the histograms.
+
+```{r}
+ks18_3 %>% ggplot(aes(usd_pledged_real)) + 
+  geom_histogram(bins = 50, center = 1) + 
+  xlab("Amount pledged (USD, Millions)") + 
+  ggtitle("Lower 95% of pledged and goal") + 
+  jtheme1 
+
+ks18_3 %>% ggplot(aes(usd_pledged_real)) + 
+  geom_histogram(bins = 50, center = 1) + 
+  xlab("Goal (USD, Millions)") + 
+  ggtitle("Lower 95% of pledged and goal") + 
+  jtheme1 
+```
+
+#Data Visualisation
+
+How long do projects tend to last? The largest peak is at 30 day.
+```{r}
+ks18_3 %>%
+  ggplot(aes(duration, col = state)) + 
+  geom_density(size= 0.5, alpha = 1, bw = .5) + 
+  scale_color_brewer(palette = "Set2") +
+  scale_fill_brewer(palette = "Set2") +
+  geom_vline(xintercept = 30, col = "blue", size = 0.3, alpha = 1) +
+  ggtitle("Duration of Projects") +
+  xlab("Duration (days)") + 
+  theme_light() +
+  jtheme2
+
+ks18_3 %>% 
+  ggplot(aes(duration, col = state)) + 
+  geom_density(size= 0.5, alpha = 1, bw = .5) + 
+  scale_color_brewer(palette = "Set2") +
+  scale_fill_brewer(palette = "Set2") +
+  geom_vline(xintercept = 30, col = "blue", size = 0.3, alpha = 1) +
+  ggtitle("Duration of Projects") +
+  xlim(0,62) +
+  xlab("Duration (days)") + 
+  theme_light() +
+  jtheme2
+```
+Success has a greater proportion of projects below 30 days than Failed does. Failed has a greated proportion of projects above 30 days than Successful does.
+
+
+How long do projects tend to last? The largest peak is at 30 day. Both successful and unsuccessful projects have similar durations.
+
+
+```{r}
+ks18_3 %>% group_by(endday) %>%
+  summarise(avg = mean(state == "successful")) %>%
+#proportion of projects ending on a monday that were successful
+  ggplot(aes(endday, avg*100, col = endday, fill = endday)) + 
+  geom_col(alpha = 0.6) + 
+  ylim(0,100) +
+  xlab("End Day") + ylab("Percent Successes") + 
+  ggtitle("Which end days have the most successes?") + 
+  jtheme2 +
+  theme(legend.position = "none")
+  
+```
+The means are only one value and do not show the spread of the data.
+
+```{r}
+ks18_3 %>% group_by(deadline, endday) %>%
+  summarise(avg = mean(state == "successful")) %>%
+  ggplot(aes(endday, avg*100, col = endday)) + 
+  geom_jitter(size = 0.75, alpha = 0.4, width = 0.1) + 
+  xlab("End Day") + ylab("Percent Success") + 
+  ggtitle("Which end days have the most successes?") + 
+  jtheme2 +
+  theme(legend.position = "none")
+```
+
+
+```{r}
+
+ks18_3 %>% group_by(launched, startday) %>%
+  summarise(avg = mean(state == "successful")) %>%
+  ggplot(aes(startday, avg*100, col = startday)) + 
+  geom_jitter(size = 0.75, alpha = 0.4, width = 0.1) + 
+  xlab("Start Day") + ylab("Percent Success") + 
+  ggtitle("Which start days have the most successes?") + 
+  jtheme2 +
+  theme(legend.position = "none")
+```
+
+```{r}
+ks18_3 %>% group_by(deadline, endmonth) %>%
+  summarise(avg = mean(state == "successful")) %>%
+  ggplot(aes(endmonth, avg*100, col = endmonth)) + 
+  geom_jitter(size = 0.75, alpha = 0.4, width = 0.1) + 
+  xlab("End Month") + ylab("Percent Success") + 
+  ggtitle("Which End Months have the most successes?") + 
+  jtheme2 +
+  theme(legend.position = "none")
+```
+
+```{r}
+ks18_3 %>% group_by(launched, startmonth) %>%
+  summarise(avg = mean(state == "successful")) %>%
+  ggplot(aes(startmonth, avg*100, col = startmonth)) + 
+  geom_jitter(size = 0.75, alpha = 0.4, width = 0.1) + 
+  xlab("Start Month") + ylab("Percent Success") + 
+  ggtitle("Which Start Months have the most successes?") + 
+  jtheme2 +
+  theme(legend.position = "none")
+```
+
+
+```{r}
+sxs_per_dur1 <- ks18_3 %>% filter(duration < 61) %>%
+  group_by(duration) %>%
+  summarise(avg = mean(state == "successful"))
+  
+sxs_per_dur1$duration <- as.numeric(sxs_per_dur1$duration)
+avg_sxs <- mean(ks18_3$state == "successful")
+
+sxs_per_dur1 %>%
+ggplot(aes(duration, avg*100, col = duration)) + 
+  geom_point() + 
+  geom_vline(xintercept = 30, col = "orange") +
+  geom_hline(yintercept = avg_sxs*100, col = "orange") + 
+  xlab("Duration (days)") + ylab("Percent Success") + 
+  ggtitle("Which durations have the most successes?") + 
+  jtheme2
+ 
+```
+
+How does duration affect success rate? - Projects less than 30 days tend to have more success than projects longer than 30 days. This agrees with the intepretation of the density plot.
+
+```{r}
+ks18_3 %>% filter(state == "successful") %>% select(pct_raised) %>% summary()
+```
+(Almost) all successful projects have raised 100% of their goal.
+
+```{r}
+sxs_per_dur2 <- ks18_3 %>% filter(duration < 61) %>% 
+  group_by(duration) %>%
+  summarise(prop = mean(pct_raised>=100))
+  
+sxs_per_dur2$duration <- as.numeric(sxs_per_dur2$duration)
+avg_sxs2 <- mean(ks18_3$pct_raised>=100)
+
+sxs_per_dur2 %>%
+ggplot(aes(duration, prop*100, col = duration)) + 
+  geom_point() + 
+  geom_vline(xintercept = 30, col = "orange") +
+  geom_hline(yintercept = avg_sxs2*100, col = "orange") + 
+  xlab("Duration (days)") + ylab("Percent of Projects exceeding goal") + 
+  ggtitle("Which durations have the projects exceeding goals?") + 
+  jtheme2
+```
+This is almost identícal to the graph with percentage of successes on the y axis.
+
+
+
+```{r}
+gen_q99 <- ks18_3 %>% 
+  filter(duration < 61 & gen != Inf & !is.nan(gen)) %>%
+  select(gen) %>% pull() %>%
+quantile(.99)
+
+pctr_q99 <- ks18_3 %>% 
+  filter(duration < 61 & gen != Inf & !is.nan(gen)) %>%
+  select(pct_raised) %>% pull() %>%
+quantile(.99)
+
+avg_gen_per_dur <- ks18_3 %>% 
+  filter(duration < 61 & gen != Inf & !is.nan(gen)) %>%
+  select(gen) %>% pull() %>% mean()
+
+gen_per_dur <- ks18_3 %>% 
+  filter(duration < 61 & gen != Inf & !is.nan(gen)) %>%
+  filter(gen <= gen_q99 & pct_raised <= pctr_q99) %>%
+  group_by(duration) %>%
+  summarise(gen = mean(gen))
+
+gen_per_dur$duration <- as.numeric(gen_per_dur$duration)
+
+gen_per_dur %>%
+  ggplot(aes(duration, gen, col = duration)) + 
+  geom_point() + 
+  geom_vline(xintercept = 30, col = "orange") +
+  geom_hline(yintercept = avg_sxs2*100, col = "orange") + 
+  xlab("Duration (days)") + ylab("Backer Generosity") + 
+  ggtitle("Which durations have the most generous backers?") + 
+  jtheme2
+```
+
+
+
+```{r}
+gen_q99 <- ks18_3 %>% 
+  filter(duration < 61 & gen != Inf & !is.nan(gen)) %>%
+  select(gen) %>% pull() %>%
+quantile(.99)
+
+pctr_q99 <- ks18_3 %>% 
+  filter(duration < 61 & gen != Inf & !is.nan(gen)) %>%
+  select(pct_raised) %>% pull() %>%
+quantile(.99)
+
+avg_pctr_all <- ks18_3 %>% 
+  filter(duration < 61 & gen != Inf & !is.nan(gen)) %>%
+  filter(gen <= gen_q99 & pct_raised <= pctr_q99) %>%
+  select(pct_raised) %>%
+  pull() %>%
+  mean()
+
+pctr_gen_per_dur <- ks18_3 %>% 
+  filter(duration < 61 & gen != Inf & !is.nan(gen)) %>%
+  filter(gen <= gen_q99 & pct_raised <= pctr_q99) %>%
+  group_by(duration) %>%
+  summarise(avg_pctr = mean(pct_raised), avg_gen = mean(gen)) %>%
+
+  ggplot(aes(as.numeric(duration), avg_pctr)) + 
+  geom_point(size = 1) + 
+  xlab("Duration (day)") + ylab("% of goal raised") + 
+  ggtitle("How does duration correlate with % goal raised?") + 
+  jtheme2
+
+ks18_3 %>% 
+  filter(duration < 61 & gen != Inf & !is.nan(gen)) %>%
+  filter(gen <= gen_q99 & pct_raised <= pctr_q99) %>%
+  group_by(duration, state) %>%
+  summarise(avg_pctr = mean(pct_raised), avg_gen = mean(gen)) %>%
+
+  ggplot(aes(as.numeric(duration), avg_pctr, col = state)) + 
+  geom_point() + 
+  geom_point(data = pctr_gen_per_dur, aes(col = NULL)) +
+  xlab("Duration (day)") + ylab("% of goal raised") + 
+  ggtitle("How does duration correlate with % goal raised?") + 
+  jtheme2
+```
+
+Plotting the average without grouping the data by state can be misleading. After grouping by state, interestingly, there are no durations where failed projects which raised over 25% of their goal, on average.
+
+```{r}
+gen_per_dur1 <- ks18_3 %>% filter(duration < 61 & gen != Inf & !is.nan(gen)) %>%
+  group_by(duration) %>%
+  summarise(avg_gen = mean(gen))
+
+gen_per_dur1$duration <- as.numeric(gen_per_dur1$duration)
+avg_gen <- ks18_3 %>% filter(duration < 61 & gen != Inf & !is.nan(gen)) %>%
+           select(gen) %>% 
+          pull() %>% 
+           mean()
+
+gen_per_dur1 %>%
+ggplot(aes(duration, avg_gen, col = duration)) + 
+  geom_point() + 
+  geom_vline(xintercept = 30, col = "orange") +
+  geom_hline(yintercept = avg_gen, col = "orange") + 
+  xlab("Duration (days)") + ylab("Average Generosity (USD/backer)") + 
+  ggtitle("Which durations have the most generous backers?") + 
+  jtheme2
+```
+This seems to follow a different trend to looking at percent of goal raised. I hypothesise that (the shorter) projects with more, but less generous, backers are more likely to succeed(/reach their goal) than (the longer) with fewer, but more generous, backers.
+
+```{r}
+ks18_3 %>% 
+  filter(duration < 61 & gen != Inf & !is.nan(gen)) %>%
+  ggplot(aes(gen)) +
+  geom_histogram(bins=100)
+
+gen_q99 <- ks18_3 %>% 
+  filter(duration < 61 & gen != Inf & !is.nan(gen)) %>%
+  select(gen) %>% pull() %>%
+quantile(.99)
+
+ks18_3 %>% 
+  filter(duration < 61 & gen != Inf & !is.nan(gen)) %>%
+  ggplot(aes(pct_raised)) +
+  geom_histogram(bins = 100) 
+
+pctr_q99 <- ks18_3 %>% 
+  filter(duration < 61 & gen != Inf & !is.nan(gen)) %>%
+  select(pct_raised) %>% pull() %>%
+quantile(.99)
+
+ks18_3 %>% 
+  filter(duration < 61 & gen != Inf & !is.nan(gen)) %>%
+  filter(gen <= gen_q99 & pct_raised <= pctr_q99) %>%
+  group_by(duration, state) %>%
+  summarise(avg_pctr = mean(pct_raised), avg_gen = mean(gen)) %>%
+
+  ggplot(aes(avg_gen, avg_pctr, col = state)) + 
+  geom_point(size = 1) + 
+  xlab("Generosity(USD/backer)") + ylab("% of goal raised") + 
+  ggtitle("How does backer generosity correlate with % goal raised?") + 
+  jtheme2
+
+```
+Because there is a big difference in the amount raised by successful projects vs unsuccessful projects, data are dgroupe by state first as to not lose these differences when means are calculated.
+
+
+
+```{r}
+ks18_3 %>% 
+  filter(duration < 61 & gen != Inf & !is.nan(gen)) %>%
+  filter(gen <= gen_q99 & pct_raised <= pctr_q99) %>%
+
+
+  ggplot(aes(gen, pct_raised, col = main_category)) + 
+  geom_point(size = .05) + 
+  xlab("Generosity(USD/backer)") + ylab("% of goal raised") + 
+  ggtitle("How does backer generosity correlate with % goal raised?") + 
+  jtheme2
+```
+
+```{r}
+pctr_q99 <- ks18_3 %>% 
+  filter(duration < 61 & gen != Inf & !is.nan(gen)) %>%
+  select(pct_raised) %>% pull() %>%
+quantile(.99)
+
+ks18_3 %>%
+  filter(duration < 61 & gen != Inf & !is.nan(gen)) %>%
+  filter(gen <= gen_q99 & pct_raised <= pctr_q99) %>%
+  group_by(duration) %>%
+  ggplot(aes(pct_raised, as.numeric(state=="successful"))) + 
+  geom_point()
+```
+
+
+```{r}
+top1000 <- ks18_1 %>% filter(state == "successful") %>%
+  arrange(desc(usd_pledged_real)) %>%
+  head(1000)
+
+top1000 %>% ggplot(aes(backers)) +
+  geom_dotplot()
+
+top100 %>% ggplot(aes(usd_pledged_real/1000000)) +
+  geom_dotplot(bins = 100) + xlab("Amount pledged (USD Millions)")
+
+top100 %>% group_by(main_category) %>%
+  summarise(total = sum(usd_pledged_real)) %>%
+  ggplot(aes(main_category, total/1000000)) + 
+  geom_col() + ylab("Amount pledged (USD Millions)")
+  
+```
+
+```{r}
+top20 <- ks18_1 %>% filter(state == "successful") %>%
+  arrange(desc(usd_pledged_real)) %>%
+  head(20)
+
+top20 %>% ggplot(aes(backers)) +
+  geom_dotplot()
+
+top20 %>% ggplot(aes(usd_pledged_real/1000000)) +
+  geom_dotplot() + xlab("Amount pledged (USD Millions)")
+
+top20 %>% group_by(main_category) %>%
+  summarise(total = sum(usd_pledged_real)) %>%
+  ggplot(aes(main_category, total/1000000)) + 
+  geom_col() + ylab("Amount pledged (USD Millions)")
+```
+
+which times of year have highest number of backers, and pledge amnts
+
+```{r}
+ks18_1 %>% filter(duration <= 61, state %in% c("successful", "failed"), usd_goal_real < 500000) %>%
+  ggplot(aes(duration, usd_goal_real, col = state)) + 
+  geom_jitter(width=0.25, size = 0.25, alpha = 0.3)
+```
+
+**which times of year have highest number of backers, and pledge amnts**
+
+The number of successful projects has gone up over time
+```{r}
+ks18_1 %>% 
+  mutate(endmonth = floor_date(deadline, unit = "month")) %>%
+  filter(duration <= 61, state %in% c("successful", "failed"), usd_goal_real < 500000) %>%
+  group_by(endmonth, state) %>%
+  summarise(total = n()) %>%
+  ggplot(aes(endmonth, total, col = state)) + 
+  geom_point(size = 0.25, alpha = .75) +
+  ggtitle("Number of Projects per Month") + 
+  theme(plot.title = element_text(size = 14, face = "bold", hjust = 0.5))
+```
+
+The average amount of money pledged (per successful project) has gone up over time. There seems to be some time pattern, at least with amount pledged for failed projects.
+
+```{r}
+ks18_1 %>% 
+  mutate(endmonth = floor_date(deadline, unit = "month")) %>%
+  filter(duration <= 61, state %in% c("successful", "failed"), usd_goal_real < 500000) %>%
+  group_by(endmonth, state) %>%
+  summarise(totalnorm = mean(usd_pledged_real)) %>%
+  ggplot(aes(endmonth, totalnorm, col = state)) + 
+  geom_point(size = 0.25) + 
+  geom_line(alpha = 0.4) + 
+  ggtitle("Average Amount Pledged per Month") +
+  xlab("End Month") + ylab("Average Amount Pledged (USD)") +
+  theme(plot.title = element_text(size = 14, face = "bold", hjust = 0.5))
+```
+
+
+```{r}
+ks18_1 %>% 
+  mutate(endmonth = floor_date(deadline, unit = "month")) %>%
+  filter(duration <= 61, state %in% c("failed"), usd_goal_real < 500000) %>%
+  group_by(endmonth, state) %>%
+  summarise(totalnorm = mean(usd_pledged_real)) %>%
+  ggplot(aes(endmonth, totalnorm)) + 
+  geom_point( size = 0.25) + 
+  geom_line(alpha = 0.3, col = "blue") +
+  ggtitle("Amount pledged - unsuccessful") +
+  xlab("End Month") + ylab("Average amount pledged per month") +
+  jtheme1
+
+```
+
+The amount of pledged to successful projects has increased
+```{r}
+ks18_1 %>% 
+  mutate(endmonth = floor_date(deadline, unit = "month")) %>%
+  filter(duration <= 61, state %in% c("successful"), usd_goal_real < 500000) %>%
+  group_by(endmonth, state) %>%
+  summarise(totalnorm = mean(usd_pledged_real)) %>%
+  ggplot(aes(endmonth, totalnorm)) + 
+  geom_point( size = 0.25) + 
+  geom_line(alpha = 0.3, col = "blue") +
+  ggtitle("Amount pledged - successful") +
+  xlab("End Month") + ylab("Average amount pledged per month") +
+  jtheme1
+
+```
+
+Which end days have more pledges?
+**decide on correct cut offs**
+
+```{r}
+ks18_1 %>% 
+  mutate(endday = wday(deadline, label = TRUE, abbr = TRUE, week_start = getOption("lubridate.week.start", 1))) %>%
+  filter(duration <= 61, state %in% c("successful"), usd_goal_real < 500000) %>%
+  group_by(endday, state) %>%
+  summarise(totalnorm = mean(usd_pledged_real)) %>%
+  ggplot(aes(endday, totalnorm)) + 
+  geom_col(aes(fill = endday)) + 
+  ggtitle("Average Amount Pledged per End Day - Successful ") +
+  xlab("End Day") + ylab("Amount Pledged (USD)") +
+  theme_classic() +
+  jtheme1
+  
+ks18_1 %>% 
+  mutate(endday = wday(deadline, label = TRUE, abbr = TRUE, week_start = getOption("lubridate.week.start", 1))) %>%
+  filter(duration <= 61, state %in% c("failed"), usd_goal_real < 500000) %>%
+  group_by(endday, state) %>%
+  summarise(totalnorm = mean(usd_pledged_real)) %>%
+  ggplot(aes(endday, totalnorm)) + 
+  geom_col(aes(fill = endday)) + 
+  ggtitle("Average Amount Pledged per End Day - Failed") +
+  xlab("End Day") + ylab("Amount Pledged (USD)") +
+  theme_classic() +
+  jtheme1
+```
+
+What is the chance of success per week day?
+```{r}
+ks18_1 %>% 
+  mutate(endday = wday(deadline, label = TRUE, abbr = TRUE, week_start = getOption("lubridate.week.start", 1))) %>%
+  filter(duration <= 61, state %in% c("successful", "failed"), usd_goal_real < 500000) %>%
+  group_by(endday, state) %>%
+  summarise(count = n()) %>%
+  mutate(pct = count/sum(count)) %>%
+ggplot(aes(endday, pct, fill = state)) + 
+  geom_col(position = "fill") + 
+  geom_text(aes(label=paste0(round(pct*100,1),"%")), position=position_stack(vjust=0.5), 
+            colour="white", size=5) +
+  ggtitle("Number of Projects") +
+  xlab("End Day") + ylab("") +
+  theme_classic() +
+  jtheme1 + 
+  theme(legend.position = "right")
+
+  
+```
+
+Is the difference between success rate per day significant?
+
+```{r}
+ks18_1 %>% 
+  filter(state %in% c("successful", "failed"))%>%
+  mutate(success = state == "successful") %>%
+  group_by(deadline) %>%
+  summarise(success_rate = mean(success)) %>%
+  mutate(endday = wday(deadline, label = TRUE, abbr = TRUE, week_start = getOption("lubridate.week.start", 1))) %>%
+  ggplot(aes(endday, success_rate * 100, col = endday)) + 
+  geom_jitter(size = 0.75, alpha = 0.4, width = 0.1) +
+  ggtitle("Success Rate per Week Day") +
+  xlab("Day of Week") + ylab("Success Rate (%)") +
+  theme(plot.title = element_text(size = 14, face = "bold", hjust = 0.5), axis.title = element_text(face = "bold"), axis.text.x = element_text(vjust = 0.5)) +
+  theme(legend.position = "none")
+```
+
+Is there a big difference between success rate and month?
+```{r}
+ks18_1 %>% 
+  filter(state %in% c("successful", "failed"))%>%
+  mutate(success = state == "successful") %>%
+  group_by(deadline) %>%
+  summarise(success_rate = mean(success)) %>%
+  mutate(mnth = month(deadline, label = TRUE, abbr = TRUE)) %>%
+  ggplot(aes(mnth, success_rate * 100, col = mnth)) + 
+  geom_jitter(size = 0.75, alpha = 0.4, width = 0.1) +
+  ggtitle("Success Rate per Month") +
+  xlab("Month of Year") + ylab("Success Rate (%)") +
+  theme(plot.title = element_text(size = 14, face = "bold", hjust = 0.5), axis.title = element_text(face = "bold"), axis.text.x = element_text(vjust = 0.5)) +
+  theme(legend.position = "none")
+```
+
+Is there a big difference between amount pledged and month?
+
+```{r}
+ks18_1 %>% 
+  filter(state %in% c("successful", "failed"), usd_pledged_real < 500000)%>%
+  group_by(deadline) %>%
+  summarise(pledged = mean(usd_pledged_real)) %>%
+  mutate(mnth = month(deadline, label = TRUE, abbr = TRUE)) %>%
+  ggplot(aes(mnth, pledged, col = mnth)) + 
+  geom_jitter(size = 0.75, alpha = 0.4, width = 0.1) +
+  ggtitle("Amount Pledged per Month") +
+  xlab("Month of Year") + ylab("Amount Pledged (USD)") +
+  theme(plot.title = element_text(size = 14, face = "bold", hjust = 0.5), axis.title = element_text(face = "bold"), axis.text.x = element_text(vjust = 0.5)) +
+  theme(legend.position = "none")
+
+
+
+
+```
+
+```{r}
+ks18_1 %>% 
+  filter(state %in% c("successful"), usd_pledged_real < 500000) %>%
+  group_by(deadline) %>%
+  summarise(pledged = mean(usd_pledged_real)) %>%
+  mutate(mnth = month(deadline, label = TRUE, abbr = TRUE)) %>%
+  ggplot(aes(mnth, pledged, col = mnth)) + 
+  geom_jitter(size = 0.75, alpha = 0.4, width = 0.1) +
+  ggtitle("Amount Pledged per Month - Successful") +
+  xlab("Month of Year") + ylab("Amount Pledged (USD)") +
+  theme(plot.title = element_text(size = 14, face = "bold", hjust = 0.5), axis.title = element_text(face = "bold"), axis.text.x = element_text(vjust = 0.5)) +
+  theme(legend.position = "none")
+
+```
+
+
+```{r}
+avg_pledge <- ks18_1 %>% 
+  mutate(endday = wday(deadline, label = TRUE, abbr = TRUE, week_start = getOption("lubridate.week.start", 1))) %>%
+  filter(duration <= 61, state %in% c("successful"), usd_pledged_real < 500000) %>%
+  group_by(endday) %>%
+  summarise(avg_pledged = mean(usd_pledged_real))
+
+ks18_1 %>% 
+  mutate(endday = wday(deadline, label = TRUE, abbr = TRUE, week_start = getOption("lubridate.week.start", 1))) %>%
+  filter(state %in% c("successful"), usd_pledged_real < 500000)%>%
+  group_by(deadline, endday) %>%
+  summarise(pledged = mean(usd_pledged_real)) %>%
+  ggplot(aes(endday, pledged, col = endday)) + 
+  geom_point(size = 0.75, alpha = 0.4, position = "jitter", width = 0.1) +
+  geom_point(data=avg_pledge, aes(endday, avg_pledged), shape=95, size=15) +
+  ggtitle("Amount Pledged per Week Day - Successful") +
+  xlab("Day of Week") + ylab("Amount Pledged (USD)") +
+  theme(plot.title = element_text(size = 14, face = "bold", hjust = 0.5), axis.title = element_text(face = "bold"), axis.text.x = element_text(vjust = 0.5)) +
+  theme(legend.position = "none")
+
+
+```
+
+
+how does duration correlate to amount pledged
+how does duration correlate to likelihood to reach goal
+which week day is it best to start and end on?

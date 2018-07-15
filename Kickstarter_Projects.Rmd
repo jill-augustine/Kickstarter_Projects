@@ -1,0 +1,600 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+```{r}
+library(readr)
+library(tidyr)
+library(dplyr)
+library(stringr)
+library(tibble)
+library(lubridate)
+library(ggplot2)
+```
+
+```{r}
+#ks2018 <- read_csv("ks-projects-201801.csv") %>% as.tibble()
+
+glimpse(ks2018)
+summary(ks2018)
+```
+
+```{r}
+ks18_1 <- ks2018
+#categorise columns correctly and view levels
+factor_names <- c("category", "main_category", "currency", "state", "country")
+ks18_1[factor_names] <- lapply(ks18_1[factor_names], factor)
+sapply(ks18_1[factor_names], levels)
+
+ks18_1$ID <- as.character(ks18_1$ID)
+```
+
+```{r}
+
+#usd_pledged is the only category with NAs. It only has 1% NAs
+summary(ks18_1)
+mean(is.na(ks18_1$`usd pledged`))
+sapply(ks18_1, function(x) {sum(is.na(x))})
+sapply(ks18_1, function(x) {mean(is.na(x))})
+```
+
+#add a duration column
+#floor round the ymd_hms values to ymd. ymd() converts from from "POSIXct" "POSIXt" to "Date" 
+# and also removed the UTC part
+
+```{r}
+ks18_1$launched <- ks18_1$launched %>% floor_date(unit = "day") %>% ymd()
+ks18_1 <- ks18_1 %>% mutate(duration = deadline - launched)
+
+glimpse(ks18_1)
+```
+
+```{r}
+#which are the highest funded projects
+ks18_1 %>% arrange(desc(usd_pledged_real)) %>% head(15)
+```
+
+```{r}
+#which are the most backed projects
+ks18_1 %>% arrange(desc(backers)) %>% head(15)
+```
+
+```{r}
+#which are the most popular types of main-category
+#rearrange factors in main_category according to number of projects in that category
+
+pop_main_cats <- ks18_1 %>% group_by(main_category) %>% 
+  summarise(number_of_projects = n()) %>%
+  arrange(desc(number_of_projects))
+  
+#if you just factor a column without specifying the levels it will create levels in alphabetical order
+#and this will be the order of the bars in the charts too
+
+pop_main_cats$main_category <- factor(pop_main_cats$main_category, levels = pop_main_cats$main_category)
+```
+
+```{r}
+jtheme1 <-   theme(plot.title = element_text(size = 14, face = "bold", hjust = 0.5), axis.title = element_text(face = "bold"), axis.text.x = element_text(angle = 90, vjust = 0.5)) +
+  theme(legend.position = "none")
+```
+
+
+```{r}
+pop_main_cats %>% ggplot(aes(main_category, number_of_projects)) +
+geom_col(aes(fill = main_category)) +
+  ggtitle("Number of Projects per Category") +
+  xlab("Main Category") +
+  ylab("Number of Projects") +
+  theme_classic() +
+  jtheme1
+```
+
+```{r}
+pop_sub_cats <- ks18_1 %>% group_by(category, main_category) %>% 
+  summarise(number_of_projects = n()) %>%
+  arrange(desc(number_of_projects)) %>%
+  head(20)
+
+pop_sub_cats$category <- factor(pop_sub_cats$category, levels = pop_sub_cats$category)
+```
+
+Taking the 20 most popular subcategories
+```{r}
+pop_sub_cats %>% ggplot(aes(category, number_of_projects)) +
+  geom_col(aes(fill = category)) +
+  ggtitle("Number of Projects per Sub-Category") +
+  xlab("Sub Category") +
+  ylab("Number of Projects") +
+  theme_classic() +
+  jtheme1
+```
+
+Which categories get the most money?
+
+```{r}
+pledged_per_maincat <- ks18_1 %>% group_by(main_category) %>%
+  summarise(amnt_pledged = sum(usd_pledged_real)) %>%
+  arrange(desc(amnt_pledged))
+
+pledged_per_maincat$main_category <- factor(pledged_per_maincat$main_category, levels = pledged_per_maincat$main_category)
+
+pledged_per_maincat %>% ggplot(aes(main_category, (amnt_pledged/10^6))) +
+  geom_col(aes(fill = main_category)) + 
+  ggtitle("Amount Pledged per Catergory") +
+  xlab("Category") + ylab("Amount Pledged (USD) millions") +
+  theme_classic() + 
+  jtheme1
+  
+```
+
+Which subgategories of games get the most money?
+
+```{r}
+pledged_games_per_subcat <- ks18_1 %>% filter(main_category == "Games") %>% 
+  group_by(category) %>%
+  summarise(amnt_pledged = sum(usd_pledged_real)) %>%
+  arrange(desc(amnt_pledged))
+
+pledged_games_per_subcat$category <- factor(pledged_games_per_subcat$category, levels = pledged_games_per_subcat$category)
+
+pledged_games_per_subcat %>% ggplot(aes(category, (amnt_pledged/10^6))) +
+  geom_col(aes(fill = category)) + 
+  ggtitle("Amount Pledged per Games Sub-Catergory") +
+  xlab("Sub-Category") + ylab("Amount Pledged (USD) millions") +
+  theme_classic() + 
+  jtheme1
+```
+
+
+Which catgories get the most backers?
+```{r}
+backers_per_maincat <- ks18_1 %>% group_by(main_category) %>%
+  summarise(no_backers = sum(backers)) %>%
+  arrange(desc(no_backers))
+
+backers_per_maincat$main_category <- factor(backers_per_maincat$main_category, levels = backers_per_maincat$main_category)
+
+backers_per_maincat %>% ggplot(aes(main_category, no_backers/1000000)) +
+  geom_col(aes(fill = main_category)) + 
+  ggtitle("Number of Backers per Category (Millions)") +
+  xlab("Category") + ylab("Number of Backers") +
+  theme_classic() + 
+  jtheme1
+```
+
+Which subcategories of games get the most backers?
+```{r}
+backers_games_per_subcat <- ks18_1 %>% 
+  filter(main_category == "Games") %>%
+  group_by(category) %>%
+  summarise(no_backers = sum(backers)) %>%
+  arrange(desc(no_backers))
+
+backers_games_per_subcat$category <- factor(backers_games_per_subcat$category, levels = backers_games_per_subcat$category)
+
+backers_games_per_subcat %>% ggplot(aes(category, no_backers/1000000)) +
+  geom_col(aes(fill = category)) + 
+  ggtitle("Number of Backers per Games Sub-Category") +
+  xlab("Sub-Category") + ylab("Number of Backers (Millions)") +
+  theme_classic() + 
+  jtheme1
+```
+
+Which categories have the most "generous" backers?
+
+```{r}
+pledge_per_backer <- ks18_1 %>%
+  group_by(main_category) %>%
+  summarise(pledged = sum(usd_pledged_real), backers = sum(backers)) %>%
+  mutate(ppb = pledged/backers) %>%
+  arrange(desc(ppb))
+  
+pledge_per_backer$main_category <- factor(pledge_per_backer$main_category, levels = pledge_per_backer$main_category)
+
+pledge_per_backer %>% ggplot(aes(main_category, ppb)) + 
+  geom_col(aes(fill=main_category)) +
+  ggtitle("Most 'Generous' Backers") +
+  xlab("Category") + ylab("Average Pledge per Backer (USD)") + 
+  theme_classic() +
+  jtheme1
+```
+
+Which subcategories of technology have the most "generous" backers?
+
+```{r}
+pledge_per_backer <- ks18_1 %>%
+  filter(main_category == "Technology") %>%
+  group_by(category) %>%
+  summarise(pledged = sum(usd_pledged_real), backers = sum(backers)) %>%
+  mutate(ppb = pledged/backers) %>%
+  arrange(desc(ppb))
+  
+pledge_per_backer$category <- factor(pledge_per_backer$category, levels = pledge_per_backer$category)
+
+pledge_per_backer %>% ggplot(aes(category, ppb)) + 
+  geom_col(aes(fill=category)) + ylim(0,425) +
+  ggtitle("Most 'Generous' Technology Backers") +
+  xlab("Sub-Category") + ylab("Average Pledge per Backer (USD)") +
+  theme_classic() + 
+  jtheme1
+```
+
+Let's compare this to the Games backers
+
+```{r}
+games_pledge_per_backer <- ks18_1 %>%
+  filter(main_category == "Games") %>%
+  group_by(category) %>%
+  summarise(pledged = sum(usd_pledged_real), backers = sum(backers)) %>%
+  mutate(ppb = pledged/backers) %>%
+  arrange(desc(ppb))
+  
+games_pledge_per_backer$category <- factor(games_pledge_per_backer$category, levels = games_pledge_per_backer$category)
+
+games_pledge_per_backer %>% ggplot(aes(category, ppb)) + 
+  geom_col(aes(fill=category)) + ylim(0,425) +
+  ggtitle("Most 'Generous' Games Backers") +
+  xlab("Sub-Category") + ylab("Average Pledge per Backer (USD)") + 
+  theme_classic() + 
+  jtheme1
+```
+
+
+Sometimes the mean per main categories does not give a good representation. Which subcategories have the most generous backers.
+
+```{r}
+pledge_per_backer_per_subcat <- ks18_1 %>%
+  group_by(category, main_category) %>%
+  summarise(pledged = sum(usd_pledged_real), backers = sum(backers)) %>%
+  mutate(ppb = pledged/backers) %>%
+  arrange(desc(ppb)) %>%
+  head(20)
+  
+pledge_per_backer_per_subcat$category <- factor(pledge_per_backer_per_subcat$category, levels = pledge_per_backer_per_subcat$category)
+
+pledge_per_backer_per_subcat %>% ggplot(aes(category, ppb)) + 
+  geom_col(aes(fill=main_category)) + ylim(0,425) +
+  ggtitle("Most 'Generous' Backers") +
+  xlab("Sub-Category") + ylab("Average Pledge per Backer (USD)") + 
+  theme_classic() + 
+  jtheme1  +
+  theme(legend.position = "right") + 
+  guides(fill=guide_legend(title="Main Category"))
+```
+
+which categories have the most successful projects?
+
+```{r}
+cat_state <- ks18_1 %>% filter(state %in% c("failed", "successful")) %>% group_by(main_category, state) %>%
+  summarise(count = n())
+
+cat_state %>% ggplot(aes(main_category, count, fill = state)) +
+  geom_col(position = "fill") +
+  ggtitle("Success Rate per Category") +
+  xlab("Category") + ylab("") + 
+  theme_classic() + 
+  jtheme1 + 
+  theme(legend.position = "right") + guides(fill=guide_legend(title="")) +
+  coord_flip()
+  
+```
+
+What is the goal range for successful projects?
+```{r}
+ks18_1 %>% filter(state == "successful", usd_goal_real <= 100000) %>%
+  select(usd_goal_real) %>%
+  arrange(desc(usd_goal_real)) %>%
+
+ggplot(aes(usd_goal_real)) +
+  geom_density() + 
+  ggtitle("Goals of successful projects") +
+  theme(plot.title = element_text(size = 14, face = "bold", hjust = 0.5))
+
+```
+
+What is the range pledged for successful projects?
+```{r}
+ks18_1 %>% filter(state == "successful") %>%
+  arrange(desc(usd_pledged_real)) %>%
+  select(usd_pledged_real)
+
+ks18_1 %>% filter(state == "successful") %>%
+  ggplot(aes(usd_pledged_real)) +
+  geom_density() + xlim(0,50000) +
+  ggtitle("goals of successful projects") +
+  theme(plot.title = element_text(size = 14, face = "bold", hjust = 0.5))
+
+```
+
+What is the range of backers for successful projects?
+```{r}
+ks18_1 %>% filter(state == "successful") %>%
+  arrange(desc(backers)) %>%
+  select(backers)
+
+ks18_1 %>% filter(state == "successful") %>%
+  ggplot(aes(backers)) +
+  geom_density() + xlim(0,1000) +
+  ggtitle("backers of successful projects") +
+  theme(plot.title = element_text(size = 14, face = "bold", hjust = 0.5))
+```
+
+What is the duration of successful projects?
+```{r}
+ks18_1 %>% select(duration) %>%
+          arrange(desc(duration))
+
+ks18_1 %>% filter(duration <= 61) %>%
+ ggplot(aes(duration)) +
+  geom_density() + 
+  geom_vline(xintercept = 30, col = "red") +
+  ggtitle("Duration of successful projects") +
+  theme(plot.title = element_text(size = 14, face = "bold", hjust = 0.5))
+```
+
+both successful and unsuccessful projects have similar durations
+```{r}
+ks18_1 %>% filter(duration <= 61, state %in% c("successful", "failed")) %>%
+ ggplot(aes(duration, col = state)) +
+  geom_density(alpha = 0.4) +
+  ggtitle("The range of failed and successful projects follows a similar pattern") +
+  theme(plot.title = element_text(size = 8, face = "bold", hjust = 0.5))
+
+```
+
+
+
+```{r}
+top1000 <- ks18_1 %>% filter(state == "successful") %>%
+  arrange(desc(usd_pledged_real)) %>%
+  head(1000)
+
+top1000 %>% ggplot(aes(backers)) +
+  geom_dotplot()
+
+#top100 %>% ggplot(aes(usd_pledged_real/1000000)) +
+  geom_dotplot(bins = 100) + xlab("Amount pledged (USD Millions)")
+
+top100 %>% group_by(main_category) %>%
+  summarise(total = sum(usd_pledged_real)) %>%
+  ggplot(aes(main_category, total/1000000)) + 
+  geom_col() + ylab("Amount pledged (USD Millions)")
+  
+```
+
+```{r}
+top20 <- ks18_1 %>% filter(state == "successful") %>%
+  arrange(desc(usd_pledged_real)) %>%
+  head(20)
+
+top20 %>% ggplot(aes(backers)) +
+  geom_dotplot()
+
+top20 %>% ggplot(aes(usd_pledged_real/1000000)) +
+  geom_dotplot() + xlab("Amount pledged (USD Millions)")
+
+top20 %>% group_by(main_category) %>%
+  summarise(total = sum(usd_pledged_real)) %>%
+  ggplot(aes(main_category, total/1000000)) + 
+  geom_col() + ylab("Amount pledged (USD Millions)")
+```
+
+which times of year have highest number of backers, and pledge amnts
+
+```{r}
+ks18_1 %>% filter(duration <= 61, state %in% c("successful", "failed"), usd_goal_real < 500000) %>%
+  ggplot(aes(duration, usd_goal_real, col = state)) + 
+  geom_jitter(width=0.25, size = 0.25, alpha = 0.3)
+```
+
+**which times of year have highest number of backers, and pledge amnts**
+
+The number of successful projects has gone up over time
+```{r}
+ks18_1 %>% 
+  mutate(endmonth = floor_date(deadline, unit = "month")) %>%
+  filter(duration <= 61, state %in% c("successful", "failed"), usd_goal_real < 500000) %>%
+  group_by(endmonth, state) %>%
+  summarise(total = n()) %>%
+  ggplot(aes(endmonth, total, col = state)) + 
+  geom_point(size = 0.25, alpha = .75) +
+  ggtitle("Number of Projects per Month") + 
+  theme(plot.title = element_text(size = 14, face = "bold", hjust = 0.5))
+```
+
+The average amount of money pledged (per successful project) has gone up over time. There seems to be some time pattern, at least with amount pledged for failed projects.
+
+```{r}
+ks18_1 %>% 
+  mutate(endmonth = floor_date(deadline, unit = "month")) %>%
+  filter(duration <= 61, state %in% c("successful", "failed"), usd_goal_real < 500000) %>%
+  group_by(endmonth, state) %>%
+  summarise(totalnorm = mean(usd_pledged_real)) %>%
+  ggplot(aes(endmonth, totalnorm, col = state)) + 
+  geom_point(size = 0.25) + 
+  geom_line(alpha = 0.4) + 
+  ggtitle("Average Amount Pledged per Month") +
+  xlab("End Month") + ylab("Average Amount Pledged (USD)") +
+  theme(plot.title = element_text(size = 14, face = "bold", hjust = 0.5))
+```
+
+
+```{r}
+ks18_1 %>% 
+  mutate(endmonth = floor_date(deadline, unit = "month")) %>%
+  filter(duration <= 61, state %in% c("failed"), usd_goal_real < 500000) %>%
+  group_by(endmonth, state) %>%
+  summarise(totalnorm = mean(usd_pledged_real)) %>%
+  ggplot(aes(endmonth, totalnorm)) + 
+  geom_point( size = 0.25) + 
+  geom_line(alpha = 0.3, col = "blue") +
+  ggtitle("Amount pledged - unsuccessful") +
+  xlab("End Month") + ylab("Average amount pledged per month") +
+  jtheme1
+
+```
+
+The amount of pledged to successful projects has increased
+```{r}
+ks18_1 %>% 
+  mutate(endmonth = floor_date(deadline, unit = "month")) %>%
+  filter(duration <= 61, state %in% c("successful"), usd_goal_real < 500000) %>%
+  group_by(endmonth, state) %>%
+  summarise(totalnorm = mean(usd_pledged_real)) %>%
+  ggplot(aes(endmonth, totalnorm)) + 
+  geom_point( size = 0.25) + 
+  geom_line(alpha = 0.3, col = "blue") +
+  ggtitle("Amount pledged - successful") +
+  xlab("End Month") + ylab("Average amount pledged per month") +
+  jtheme1
+
+```
+
+Which end days have more pledges?
+**decide on correct cut offs**
+
+```{r}
+ks18_1 %>% 
+  mutate(endday = wday(deadline, label = TRUE, abbr = TRUE, week_start = getOption("lubridate.week.start", 1))) %>%
+  filter(duration <= 61, state %in% c("successful"), usd_goal_real < 500000) %>%
+  group_by(endday, state) %>%
+  summarise(totalnorm = mean(usd_pledged_real)) %>%
+  ggplot(aes(endday, totalnorm)) + 
+  geom_col(aes(fill = endday)) + 
+  ggtitle("Average Amount Pledged per End Day - Successful ") +
+  xlab("End Day") + ylab("Amount Pledged (USD)") +
+  theme_classic() +
+  jtheme1
+  
+ks18_1 %>% 
+  mutate(endday = wday(deadline, label = TRUE, abbr = TRUE, week_start = getOption("lubridate.week.start", 1))) %>%
+  filter(duration <= 61, state %in% c("failed"), usd_goal_real < 500000) %>%
+  group_by(endday, state) %>%
+  summarise(totalnorm = mean(usd_pledged_real)) %>%
+  ggplot(aes(endday, totalnorm)) + 
+  geom_col(aes(fill = endday)) + 
+  ggtitle("Average Amount Pledged per End Day - Failed") +
+  xlab("End Day") + ylab("Amount Pledged (USD)") +
+  theme_classic() +
+  jtheme1
+```
+
+What is the chance of success per week day?
+```{r}
+ks18_1 %>% 
+  mutate(endday = wday(deadline, label = TRUE, abbr = TRUE, week_start = getOption("lubridate.week.start", 1))) %>%
+  filter(duration <= 61, state %in% c("successful", "failed"), usd_goal_real < 500000) %>%
+  group_by(endday, state) %>%
+  summarise(count = n()) %>%
+  mutate(pct = count/sum(count)) %>%
+ggplot(aes(endday, pct, fill = state)) + 
+  geom_col(position = "fill") + 
+  geom_text(aes(label=paste0(round(pct*100,1),"%")), position=position_stack(vjust=0.5), 
+            colour="white", size=5) +
+  ggtitle("Number of Projects") +
+  xlab("End Day") + ylab("") +
+  theme_classic() +
+  jtheme1 + 
+  theme(legend.position = "right")
+
+  
+```
+
+Is the difference between success rate per day significant?
+
+```{r}
+ks18_1 %>% 
+  filter(state %in% c("successful", "failed"))%>%
+  mutate(success = state == "successful") %>%
+  group_by(deadline) %>%
+  summarise(success_rate = mean(success)) %>%
+  mutate(endday = wday(deadline, label = TRUE, abbr = TRUE, week_start = getOption("lubridate.week.start", 1))) %>%
+  ggplot(aes(endday, success_rate * 100, col = endday)) + 
+  geom_jitter(size = 0.75, alpha = 0.4, width = 0.1) +
+  ggtitle("Success Rate per Week Day") +
+  xlab("Day of Week") + ylab("Success Rate (%)") +
+  theme(plot.title = element_text(size = 14, face = "bold", hjust = 0.5), axis.title = element_text(face = "bold"), axis.text.x = element_text(vjust = 0.5)) +
+  theme(legend.position = "none")
+```
+
+Is there a big difference between success rate and month?
+```{r}
+ks18_1 %>% 
+  filter(state %in% c("successful", "failed"))%>%
+  mutate(success = state == "successful") %>%
+  group_by(deadline) %>%
+  summarise(success_rate = mean(success)) %>%
+  mutate(mnth = month(deadline, label = TRUE, abbr = TRUE)) %>%
+  ggplot(aes(mnth, success_rate * 100, col = mnth)) + 
+  geom_jitter(size = 0.75, alpha = 0.4, width = 0.1) +
+  ggtitle("Success Rate per Month") +
+  xlab("Month of Year") + ylab("Success Rate (%)") +
+  theme(plot.title = element_text(size = 14, face = "bold", hjust = 0.5), axis.title = element_text(face = "bold"), axis.text.x = element_text(vjust = 0.5)) +
+  theme(legend.position = "none")
+```
+
+Is there a big difference between amount pledged and month?
+
+```{r}
+ks18_1 %>% 
+  filter(state %in% c("successful", "failed"), usd_pledged_real < 500000)%>%
+  group_by(deadline) %>%
+  summarise(pledged = mean(usd_pledged_real)) %>%
+  mutate(mnth = month(deadline, label = TRUE, abbr = TRUE)) %>%
+  ggplot(aes(mnth, pledged, col = mnth)) + 
+  geom_jitter(size = 0.75, alpha = 0.4, width = 0.1) +
+  ggtitle("Amount Pledged per Month") +
+  xlab("Month of Year") + ylab("Amount Pledged (USD)") +
+  theme(plot.title = element_text(size = 14, face = "bold", hjust = 0.5), axis.title = element_text(face = "bold"), axis.text.x = element_text(vjust = 0.5)) +
+  theme(legend.position = "none")
+
+
+
+
+```
+
+```{r}
+ks18_1 %>% 
+  filter(state %in% c("successful"), usd_pledged_real < 500000) %>%
+  group_by(deadline) %>%
+  summarise(pledged = mean(usd_pledged_real)) %>%
+  mutate(mnth = month(deadline, label = TRUE, abbr = TRUE)) %>%
+  ggplot(aes(mnth, pledged, col = mnth)) + 
+  geom_jitter(size = 0.75, alpha = 0.4, width = 0.1) +
+  ggtitle("Amount Pledged per Month - Successful") +
+  xlab("Month of Year") + ylab("Amount Pledged (USD)") +
+  theme(plot.title = element_text(size = 14, face = "bold", hjust = 0.5), axis.title = element_text(face = "bold"), axis.text.x = element_text(vjust = 0.5)) +
+  theme(legend.position = "none")
+
+```
+
+
+```{r}
+avg_pledge <- ks18_1 %>% 
+  mutate(endday = wday(deadline, label = TRUE, abbr = TRUE, week_start = getOption("lubridate.week.start", 1))) %>%
+  filter(duration <= 61, state %in% c("successful"), usd_pledged_real < 500000) %>%
+  group_by(endday) %>%
+  summarise(avg_pledged = mean(usd_pledged_real))
+
+ks18_1 %>% 
+  mutate(endday = wday(deadline, label = TRUE, abbr = TRUE, week_start = getOption("lubridate.week.start", 1))) %>%
+  filter(state %in% c("successful"), usd_pledged_real < 500000)%>%
+  group_by(deadline, endday) %>%
+  summarise(pledged = mean(usd_pledged_real)) %>%
+  ggplot(aes(endday, pledged, col = endday)) + 
+  geom_point(size = 0.75, alpha = 0.4, position = "jitter", width = 0.1) +
+  geom_point(data=avg_pledge, aes(endday, avg_pledged), shape=95, size=15) +
+  ggtitle("Amount Pledged per Week Day - Successful") +
+  xlab("Day of Week") + ylab("Amount Pledged (USD)") +
+  theme(plot.title = element_text(size = 14, face = "bold", hjust = 0.5), axis.title = element_text(face = "bold"), axis.text.x = element_text(vjust = 0.5)) +
+  theme(legend.position = "none")
+
+
+```
+
+
+how does duration correlate to amount pledged
+how does duration correlate to likelihood to reach goal
+which week day is it best to start and end on?
