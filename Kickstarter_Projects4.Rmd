@@ -16,8 +16,6 @@ library(caret)
 library(doSNOW)
 library(broom)
 
-#ks2018 <- read_csv("ks-projects-201801.csv") %>% as.tibble()
-
 jtheme1 <- theme(plot.title = element_text(size = 14, face = "bold", hjust = 0.5), axis.title = element_text(face = "bold"), axis.text.x = element_text(angle = 90, vjust = 0.5))
 
 jtheme2 <- theme(plot.title = element_text(size = 14, face = "bold", hjust = 0.5), axis.title = element_text(face = "bold"))
@@ -27,6 +25,9 @@ jtheme2 <- theme(plot.title = element_text(size = 14, face = "bold", hjust = 0.5
 The classes of some categories need to be changed. Columns that should be factors: category, main_category, currency, state, country. Columns that should be character vectors: ID
 
 ```{r}
+
+# ks2018 <- read_csv("https://jill-augustine.github.io/datasets/ks-projects-201801.csv") %>% as.tibble()
+
 glimpse(ks2018)
 summary(ks2018)
 ```

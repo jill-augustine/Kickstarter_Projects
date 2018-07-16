@@ -15,7 +15,7 @@ library(ggplot2)
 ```
 
 ```{r}
-#ks2018 <- read_csv("ks-projects-201801.csv") %>% as.tibble()
+# ks2018 <- read_csv("https://jill-augustine.github.io/datasets/ks-projects-201801.csv") %>% as.tibble()
 
 glimpse(ks2018)
 summary(ks2018)
